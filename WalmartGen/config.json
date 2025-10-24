@@ -1,0 +1,10 @@
+{
+    "password": "BestAcc123X",
+    "smsPoolApiKey": "",
+    "daisyApiKey": "",
+    "delay": 0,
+    "version": {
+        "platformVersion": "usweb-1.228.0-a8ac120433666379ef5265da775bda017253522b-0161518r"
+    },
+    "useDaisy": true
+}
