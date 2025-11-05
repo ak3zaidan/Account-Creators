@@ -41,11 +41,8 @@ USE_PROXIES = True
 
 PROXY_FILE = "../isp.txt"
 
-USE_FOX = False
-
 from selenium_driverless.types.by import By
 from selenium_driverless import webdriver
-from camoufox.sync_api import Camoufox
 from imap_tools import MailBox
 from colorama import init
 import datetime
@@ -177,6 +174,13 @@ def parse_proxy(proxy_string):
         return host, port, username, password
     except:
         return "", "", "", ""
+
+class Proxy:
+    def __init__(self, host, port, username, password):
+        self.proxy_address = host
+        self.proxy_port = port
+        self.proxy_username = username
+        self.proxy_password = password
 
 def addAccount(email, password, original):
     global emailsDup
@@ -328,6 +332,18 @@ def get_substring(body: str, begin: str, end: str) -> str:
     
     return body[start_index:end_index]
 
+async def auth_callback(params, global_conn, proxy=None):
+    """Handle proxy authentication using CDP"""
+    if proxy and proxy.proxy_address + ":" + proxy.proxy_port in params.get("authChallenge", {}).get("origin", ""):
+        response = {"response": "ProvideCredentials", "username": proxy.proxy_username, "password": proxy.proxy_password}
+        await global_conn.execute_cdp_cmd("Fetch.continueWithAuth", {"requestId": params["requestId"], "authChallengeResponse": response})
+    else:
+        await global_conn.execute_cdp_cmd("Fetch.continueWithAuth", {"requestId": params["requestId"], "authChallengeResponse": {"response": "Default"}})
+
+async def on_request(params, global_conn):
+    """Handle paused requests"""
+    await global_conn.execute_cdp_cmd("Fetch.continueRequest", {"requestId": params["requestId"]})
+
 # IMAP
 
 def all_digits(word):
@@ -420,25 +436,6 @@ def recursive_code_checker(find_email, start_time):
 
 # Main
 
-def selenium_task():
-    global workIndex, emails
-
-    while True:
-        with index_lock:
-            if workIndex >= len(emails):
-                break
-            email = emails[workIndex]
-            print(f'Creating new acc {workIndex}')
-            workIndex += 1
-
-        try:
-            if USE_FOX:
-                create_account_fox(email)
-            else:
-                asyncio.run(create_account(email))
-        except Exception as e:
-            print(f"Error in Selenium task: {e}")
-
 async def create_account(emailStr):
     original = emailStr
 
@@ -466,6 +463,19 @@ async def create_account(emailStr):
         if HEADLESS_MODE:
             options.add_argument("--headless=new")
 
+        options.use_extension = False
+
+        # Set up proxy before creating driver
+        proxy_obj = None
+        if USE_PROXIES:
+            proxy = random.choice(proxies) if proxies else None
+            if proxy:
+                host, port, username, proxyPass = parse_proxy(proxy)
+                proxy_obj = Proxy(host, port, username, proxyPass)
+                options.add_argument("--proxy-server=" + host + ":" + port)
+            else:
+                print(f"{red_text}Not using proxy{reset}")
+
         async with webdriver.Chrome(options=options) as driver:
 
             if not HEADLESS_MODE:
@@ -475,14 +485,18 @@ async def create_account(emailStr):
                 await driver.set_window_position(pos_x, pos_y)
                 await driver.set_window_size(width, height)
             
-            if USE_PROXIES:
-                proxy = random.choice(proxies) if proxies else None
-                if proxy:
-                    host, port, username, proxyPass = parse_proxy(proxy)
-                    proxy_url = f"http://{username}:{proxyPass}@{host}:{port}/"
-                    await driver.set_single_proxy(proxy_url)
-                else:
-                    print(f"{red_text}Not using proxy{reset}")
+            # Set up proxy authentication via CDP if proxy is used
+            if proxy_obj:
+                global_conn = driver.base_target
+                result = await global_conn.execute_cdp_cmd("Fetch.enable", {
+                    "handleAuthRequests": True,
+                    "patterns": [
+                        {"requestStage": "Request", "urlPattern": "*"},
+                        {"requestStage": "Response", "urlPattern": "*"}
+                    ]
+                })
+                result = await global_conn.add_cdp_listener("Fetch.authRequired", lambda data: auth_callback(data, global_conn, proxy_obj))
+                result = await global_conn.add_cdp_listener("Fetch.requestPaused", lambda data: on_request(data, global_conn))
 
             await driver.get("https://www.bestbuy.com/identity/global/createAccount", wait_load=True)
 
@@ -564,74 +578,21 @@ async def create_account(emailStr):
         except TypeError as e:
             print("Caught in finally block:", e)
 
-def create_account_fox(emailStr):
-    original = emailStr
-    password = None
+def selenium_task():
+    global workIndex, emails
 
-    try:
-        # Separate password if given in email string
-        if ".com:" in emailStr:
-            emailStr, password = emailStr.split(":", 1)
-        if not password:
-            password = MAIN_PASSWORD
+    while True:
+        with index_lock:
+            if workIndex >= len(emails):
+                break
+            email = emails[workIndex]
+            print(f'Creating new acc {workIndex}')
+            workIndex += 1
 
-        config = {
-            "humanize": True
-        }
-
-        with Camoufox(
-            proxy=get_proxy(proxies),
-            geoip=True,
-            config=config,
-            firefox_user_prefs={
-                "media.peerconnection.enabled": False
-            }
-        ) as browser:
-
-            # Launch browser
-            page = browser.new_page()
-            page.goto("https://www.bestbuy.com/identity/global/createAccount", wait_until="load")
-  
-            print(green_text + "Creation in progress: " + emailStr + reset)
-
-            # Fill in fields
-            def type_like_human(selector, value):
-                field = page.locator(selector)
-                if not field:
-                    raise Exception(f"Field {selector} not found")
-                field.hover()
-                field.click(click_count=random.randint(1, 3))
-                field.press_sequentially(value, delay=random.uniform(50, 200))
-
-            type_like_human('input#lastName', random.choice(commonLastNames))
-            time.sleep(random.uniform(0.1, 0.2))
-            type_like_human('input#firstName', random.choice(commonFirstNames))
-            time.sleep(random.uniform(0.1, 0.3))
-            type_like_human('input#email', emailStr)
-            time.sleep(random.uniform(0.1, 0.3))
-            type_like_human('input#phone', generate_phone_number())
-            time.sleep(random.uniform(0.1, 0.2))
-            type_like_human('input#fld-p1', password)
-            time.sleep(random.uniform(0.1, 0.2))
-            type_like_human('input#reenterPassword', password)
-            time.sleep(random.uniform(0.5, 1.9))
-
-            # Click create account button
-            page.locator('button[type="submit"]').click()
-
-            time.sleep(10)
-
-            # Wait for confirmation
-            print("Url is: " + page.url)
-
-            if "customer/myaccount" in page.url:
-                print(green_text + "Account created: " + emailStr + reset)
-                addAccount(emailStr, password, original)
-            else:
-                raise Exception("Failure: account creation failed")
-                
-    except Exception as e:
-        print(f"{red_text}Error: {reset}{e}")
+        try:
+            asyncio.run(create_account(email))
+        except Exception as e:
+            print(f"Error in Selenium task: {e}")
 
 def main():
     global emails, workIndex, emailsDup, mailbox
@@ -705,3 +666,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
