@@ -1,21 +1,21 @@
 # To clean chrome on mac: killall "Google Chrome"
 # To clean chrome on windows: taskkill /IM chrome.exe /F
 # Note: catchall domain does not work
+# taskkill /f /im python.exe
 
-THREADS = 10
-
+THREADS = 6
 
 
 IMAPUSERNAME = "@gmail.com"
-IMAPPASSWORD = ""
+IMAPPASSWORD = "xxxx xxxx xxxx xxxx"
 HOST = "imap.gmail.com"
 
 
+PASSWORD = "BestAcc@321"
+RANDOM_PASSWORD = False
 
 
-
-
-
+RESIS_PATH = "../resis.txt"
 
 
 
@@ -38,7 +38,7 @@ HOST = "imap.gmail.com"
 # After they download close then open (restart) the command line
 # Then run the commands: 
 # pip install imap-tools
-# pip install selenium-driverless
+# pip install nodriver
 
 # Whenever you modify this file you need to save it with control S or go to file and save
 # THREADS determines how many times it multi threads (how many accnts are made at once) I recommend 10-20 depending on computer size
@@ -73,27 +73,23 @@ HOST = "imap.gmail.com"
 
 # IGNORE -----------------------------------------------------
 
-HEADLESS_MODE = True
+HEADLESS_MODE = False
 
 USE_PROXIES = True
 
-# If true then uses resis.txt, if false then uses isp.txt (Uber we can use ISP)
-
-USE_RESIS = True
-
-from selenium_driverless.types.by import By
-from selenium_driverless import webdriver
+from nodriver.cdp import fetch
 from imap_tools import MailBox
 from colorama import init
+import nodriver as nd
 import platform
 import threading
 import datetime
 import asyncio
-import warnings
 import random
 import string
 import time
 import os
+import gc
 
 if platform.system() == "Darwin":  # macOS
     CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -123,10 +119,6 @@ dup_lock = threading.Lock()
 green_text = '\033[92m'  # 92 is the ANSI code for bright green text
 reset = '\033[0m'  # Reset the color to default terminal color
 red_text = '\033[91m'  # 91 is the ANSI code for bright red text
-
-warnings.filterwarnings("ignore", message="got execution_context_id and unique_context=True, defaulting to execution_context_id")
-
-# Helpers
 
 commonFirstNames = [
     "James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda", "William", "Elizabeth",
@@ -212,14 +204,6 @@ commonLastNames = [
     "Love", "Robbins", "Salinas", "Yates", "Duarte", "Kirk", "Ford", "Pitt", "Bartlett", "Valenzuela"
 ]
 
-def find_email_index(target_email):
-    global emails
-
-    for i, email in enumerate(emails):
-        if email == target_email:
-            return i
-    return 0
-
 def get_substring(body: str, begin: str, end: str) -> str:
     start_index = body.find(begin)
     if start_index == -1:
@@ -258,17 +242,31 @@ def addAccount(email, password, original):
                 for email in emailsDup:
                     f.write(f"{email}\n")
 
+def addAccountNonVerified(email, password, original):
+    global emailsDup
+    
+    # Append new account to file
+    with open("createdAccountsNonVerified.txt", "a") as file:
+        file.write(f"{email}:{password}\n")
+
+    if not useRandom and catch_all == "":
+        with dup_lock:
+            # Remove the used email from the list
+            if original in emailsDup:
+                emailsDup.remove(original)
+
+            # Overwrite EmailsToUse.txt with the updated list
+            with open("EmailsToUse.txt", "w") as f:
+                for email in emailsDup:
+                    f.write(f"{email}\n")
+
 def get_prefix(string, x):
     return string[:x]
-
-def generate_phone_number():
-    phone_number = ''.join(random.choices('0123456789', k=10))
-    return phone_number
 
 def generate_password():
     letters = string.ascii_letters
     digits = string.digits
-    special_chars = string.punctuation
+    special_chars = ''.join(c for c in string.punctuation if c != ':')
     
     mandatory_chars = [
         random.choice(letters),
@@ -330,51 +328,94 @@ def prompt_for_email_input():
 def load_proxies():
     global proxies
 
-    if USE_RESIS:
-        if not os.path.exists("../resis.txt"):
-            print("Error: 'resis.txt' not found.")
-            return
-        with open("../resis.txt", "r") as file:
-            proxies = [line.strip() for line in file if line.strip()]
-    else:
-        if not os.path.exists("../isp.txt"):
-            print("Error: 'isp.txt' not found.")
-            return
-        with open("../isp.txt", "r") as file:
-            proxies = [line.strip() for line in file if line.strip()]
+    if not os.path.exists(RESIS_PATH):
+        print(f"Error: '{RESIS_PATH}' not found.")
+        return
+    with open(RESIS_PATH, "r") as file:
+        proxies = [line.strip() for line in file if line.strip()]
 
     print(f"\n\nLoaded {len(proxies)} proxies.")
 
-def get_three_random_strings():
-    first = str(random.randint(1, 12))
-    second = str(random.randint(1, 25))
-    third = str(random.randint(2000, 2005))
+async def send_chars(tab, xpath, input_string):
+    """Send characters to an element using nodriver."""
+    try:
+        elements = await tab.xpath(xpath)
+        if not elements:
+            raise Exception(f"No element found for XPath: {xpath}")
+        element = elements[0]
+        await element.send_keys(input_string)
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+    except Exception as e:
+        print(f"Error in send_chars: {e}")
+
+async def click_element(tab, xpath):
+    """Click an element using nodriver."""
+    try:
+        elements = await tab.xpath(xpath)
+        if not elements:
+            raise Exception(f"No element found for XPath: {xpath}")
+        element = elements[0]
+        await element.click()
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+    except Exception as e:
+        print(f"Error in click_element: {e}")
+        return False
     
-    return first, second, third
+    return True
 
-async def sendChars(driver, xpath, input_string):
-    element = await driver.find_element(By.XPATH, xpath, timeout=20)
-    await element.send_keys(input_string)
-    time.sleep(random.uniform(0.1, 0.2))
+async def setup_proxy(username, password, tab):
+    """Set up proxy authentication using nodriver's fetch domain."""
+    async def auth_challenge_handler(event: fetch.AuthRequired):
+        await tab.send(
+            fetch.continue_with_auth(
+                request_id=event.request_id,
+                auth_challenge_response=fetch.AuthChallengeResponse(
+                    response="ProvideCredentials",
+                    username=username,
+                    password=password,
+                ),
+            )
+        )
 
-async def js_set_value(driver, xpath, input_string):
-    element = await driver.find_element(By.XPATH, xpath, timeout=20)
-    await driver.execute_script("arguments[0].value = arguments[1];", element, input_string)
-    # Also trigger an input event to activate any listeners
-    await driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", element)
-    # And maybe a change event
-    await driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", element)
-    time.sleep(random.uniform(0.1, 0.2))
+    async def req_paused(event: fetch.RequestPaused):
+        try:
+            await tab.send(fetch.continue_request(request_id=event.request_id))
+        except:
+            pass
 
-async def clickElement(driver, xpath):
-    element = await driver.find_element(By.XPATH, xpath, timeout=20)
-    await element.click(move_to=True)
-    time.sleep(random.uniform(0.1, 0.2))
+    tab.add_handler(
+        fetch.RequestPaused, lambda event: asyncio.create_task(req_paused(event))
+    )
+    tab.add_handler(
+        fetch.AuthRequired,
+        lambda event: asyncio.create_task(auth_challenge_handler(event)),
+    )
 
-async def js_click(driver, xpath):
-    element = await driver.find_element(By.XPATH, xpath, timeout=20)
-    await driver.execute_script("arguments[0].click();", element)
-    time.sleep(random.uniform(0.1, 0.2))
+    await tab.send(fetch.enable(handle_auth_requests=True))
+
+async def wait_for_page_load(tab):
+    """
+    Wait for the page to fully load before proceeding.
+    
+    Args:
+        tab: The nodriver browser tab
+    """
+    await tab.evaluate(
+            expression = """
+                new Promise((resolve) => {
+                    if (document.readyState === 'complete') {
+                        resolve();
+                    } else {
+                        document.addEventListener('readystatechange', () => {
+                            if (document.readyState === 'complete') {
+                                resolve();
+                            }
+                        });
+                    }
+                });
+            """,
+            await_promise = True
+        ) 
 
 # Imap
 
@@ -382,7 +423,7 @@ def all_digits(word):
     return word.isdigit()
 
 def is_sixty_seconds_old(start_time):
-    return (datetime.datetime.now() - start_time).total_seconds() > 60
+    return (datetime.datetime.now() - start_time).total_seconds() > 80
 
 def get_code(find_email: str) -> str:
     global mailbox
@@ -401,9 +442,10 @@ def get_code(find_email: str) -> str:
 
         try:
             fetched_messages = list(mailbox.fetch(
+                limit=THREADS if THREADS > 8 else 8,
                 mark_seen=False,
-                limit=THREADS if THREADS > 5 else 5,
-                reverse=True
+                reverse=True,
+                bulk=True
             ))
         except Exception as e:
             print(f"Error fetching messages: {e}")
@@ -463,7 +505,166 @@ def recursive_code_checker(find_email, start_time):
 
 # Main
 
-def selenium_task():
+async def create_account(emailStr):
+    original = emailStr
+    browser = None
+    tab = None
+    account_created = False
+    tempPass = generate_password()
+
+    try:
+        # Select a random proxy if enabled
+        proxy = None
+        if USE_PROXIES and proxies:
+            proxy = random.choice(proxies)
+        else:
+            print(f"{red_text}Not using proxy{reset}")
+
+        # Randomize window size and position for unique fingerprint
+        window_width = random.randint(1000, 1500)
+        window_height = random.randint(750, 950)
+        x_position = random.randint(0, 500)
+        y_position = random.randint(0, 500)
+
+        # Build Chrome arguments
+        args = [
+            f"--window-size={window_width},{window_height}",
+            f"--window-position={x_position},{y_position}",
+            "--disable-sync",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+            "--disable-breakpad",
+            "--disable-extensions",
+            "--incognito",
+            "--disable-dev-shm-usage",
+        ]
+
+        # Inject proxy if used
+        if proxy:
+            host, port, username, proxyPass = parse_proxy(proxy)
+            proxy_url = f"http://{host}:{port}"
+            args.append(f"--proxy-server={proxy_url}")
+
+        # Start nodriver browser
+        browser = await nd.start(
+            browser_executable_path=CHROME_PATH,
+            headless=HEADLESS_MODE,
+            stealth=True,
+            browser_args=args
+        )
+        
+        # Set up proxy authentication
+        if proxy:
+            main_tab = await browser.get("draft:,")
+            await setup_proxy(username, proxyPass, main_tab)
+        
+        # Navigate to GOAT login page
+        tab = await browser.get("https://www.goat.com/login")
+
+        await wait_for_page_load(tab)
+
+        newPass = None
+        if ".com:" in emailStr:
+            emailStr, newPass = emailStr.split(":", 1)
+
+        # Click create acc
+        await click_element(tab, '//*[@id="main-page-layout"]/div/div/div[2]/div/button')
+
+        await asyncio.sleep(random.uniform(1, 2))
+
+        # Send name
+        await send_chars(tab, '//*[@id="name"]', random.choice(commonFirstNames) + " " + random.choice(commonLastNames))
+
+        # Send email
+        await send_chars(tab, '//*[@id="email"]', emailStr)
+
+        # Send password
+        await send_chars(tab, '//*[@id="password"]', tempPass)
+
+        # Click Create account
+        await click_element(tab, '//*[@id="main-page-layout"]/div/div/div[2]/div/form/button')
+
+        await asyncio.sleep(6)
+
+        # Get profile page
+        await tab.get("https://www.goat.com/account/profile")
+        await wait_for_page_load(tab)
+
+        # Click text field
+        result = await click_element(tab, '//*[@id="password"]')
+        if not result:
+            raise Exception("Failed to locate password field")
+
+        account_created = True
+        print(green_text + "-> Account created: " + emailStr + reset)
+
+        # Click get code
+        await click_element(tab, '//*[@id="main-page-layout"]/div[2]/div/div[2]/button')
+
+        print("-> Email waiting for code: " + emailStr)
+
+        # Get Code
+        start_time = datetime.datetime.now()
+        await asyncio.sleep(5)
+        code, error = recursive_code_checker(emailStr, start_time)
+        if error:
+            raise Exception(f'Error getting code {str(error)}')
+        
+        print(green_text + "Email found code: " + emailStr + reset)
+        
+        # Enter otp
+        await send_chars(tab, '//*[@id="otpCode"]', code)
+
+        # Click continue
+        result = await click_element(tab, '//*[@id="main-page-layout"]/div[2]/div/div[2]/form/button[1]')
+        if not result:
+            raise Exception("Failed to locate continue button")
+
+        await asyncio.sleep(2)
+
+        # Send new password
+        if not newPass:
+            if RANDOM_PASSWORD:
+                newPass = generate_password()
+            else:
+                newPass = PASSWORD
+        await send_chars(tab, '//*[@id="password"]', newPass)
+        await asyncio.sleep(2)
+        await send_chars(tab, '//*[@id="passwordConfirmation"]', newPass)
+
+        await asyncio.sleep(2)
+
+        # Click save
+        result = await click_element(tab, '//*[@id="main-page-layout"]/div/main/form/button')
+        if not result:
+            raise Exception("Failed to locate save button")
+
+        print(green_text + "Account verified! -> " + emailStr + reset)
+
+        addAccount(emailStr, newPass, original)
+
+        await asyncio.sleep(2)
+
+    except Exception as e:
+        print(f"{red_text}Error: {reset}{e}")
+
+        if account_created:
+            addAccountNonVerified(emailStr, tempPass, original)
+    finally:
+        # Cleanup
+        try:
+            if browser:
+                browser.stop()
+        except Exception as stop_error:
+            print(f"Error while closing browser: {stop_error}")
+        
+        # Force garbage collection to free memory
+        gc.collect()
+
+def nodriver_task():
     global workIndex, emails
 
     time.sleep(random.uniform(0.1, 15.2))
@@ -479,113 +680,7 @@ def selenium_task():
         try:
             asyncio.run(create_account(email))
         except Exception as e:
-            print(f"Error in Selenium task: {e}")
-
-async def create_account(emailStr):
-    original = emailStr
-
-    try:
-        options = webdriver.ChromeOptions()
-
-        options.binary_location = CHROME_PATH
-
-        options.add_argument("--disable-features=DisableLoadExtensionCommandLineSwitch")
-
-        if HEADLESS_MODE:
-            options.add_argument("--headless=new")
-
-        async with webdriver.Chrome(options=options) as driver:
-            
-            if USE_PROXIES:
-                proxy = random.choice(proxies) if proxies else None
-                if proxy:
-                    host, port, username, proxyPass = parse_proxy(proxy)
-                    proxy_url = f"http://{username}:{proxyPass}@{host}:{port}/"
-                    await driver.set_single_proxy(proxy_url)
-
-            # Get Home Page
-            await driver.get("https://www.goat.com/login", wait_load=True)
-
-            newPass = None
-            if ".com:" in emailStr:
-                emailStr, newPass = emailStr.split(":", 1)
-                PassProvided = newPass
-
-            # Click create acc
-            await clickElement(driver, '//*[@id="main-page-layout"]/div/div/div[2]/div/button')
-
-            # Send name
-            await sendChars(driver, '//*[@id="name"]', random.choice(commonFirstNames) + " " + random.choice(commonLastNames))
-
-            # Send email
-            await sendChars(driver, '//*[@id="email"]', emailStr)
-
-            tempPass = generate_password()
-            # Send password
-            await sendChars(driver, '//*[@id="password"]', tempPass)
-
-            # Click Create account
-            await clickElement(driver, '//*[@id="main-page-layout"]/div/div/div[2]/div/form/button')
-
-            time.sleep(6)
-
-            # Get profile page
-            await driver.get("https://www.goat.com/account/profile", wait_load=True)
-
-            # Click text field
-            await js_click(driver, '//*[@id="password"]')
-
-            # Click get code
-            await clickElement(driver, '//*[@id="main-page-layout"]/div[2]/div/div[2]/button')
-
-            print("Email waiting for code: " + emailStr)
-
-            # Get Code
-            start_time = datetime.datetime.now()
-            if isRetry and find_email_index(emailStr) < THREADS:
-                time.sleep(20)
-            else:
-                time.sleep(10)
-            code, error = recursive_code_checker(emailStr, start_time)
-            if error:
-                raise Exception(f'Error getting code {str(error)}')
-            
-            print(green_text + "Email found code: " + emailStr + reset)
-            
-            # Enter otp
-            await js_set_value(driver, '//*[@id="otpCode"]', code)
-
-            # Click continue
-            await clickElement(driver, '//*[@id="main-page-layout"]/div[2]/div/div[2]/form/button[1]')
-
-            time.sleep(2)
-
-            # Send new password
-            if not newPass:
-                newPass = generate_password()
-            await sendChars(driver, '//*[@id="password"]', newPass)
-            time.sleep(2)
-            await sendChars(driver, '//*[@id="passwordConfirmation"]', newPass)
-
-            time.sleep(2)
-
-            # Click save
-            await clickElement(driver, '//*[@id="main-page-layout"]/div/main/form/button')
-
-            print(green_text + "Account created! -> " + emailStr + reset)
-
-            addAccount(emailStr, newPass, original)
-
-            time.sleep(2)
-
-    except Exception as e:
-        print(f"{red_text}Error: {reset}{e}")
-    finally:
-        try:
-            if 'driver' in locals():
-                await driver.quit()
-        except TypeError as e:
-            print("Caught in finally block:", e)
+            print(f"Error in NoDriver task: {e}")
 
 def main():
     global emails, workIndex, mailbox, cached_code_data, isRetry, emailsDup
@@ -605,7 +700,7 @@ def main():
 
     threads = []
     for _ in range(THREADS):
-        thread = threading.Thread(target=selenium_task)
+        thread = threading.Thread(target=nodriver_task)
         threads.append(thread)
         thread.start()
 
@@ -627,7 +722,7 @@ def main():
             workIndex = 0
             threads = []
             for _ in range(THREADS):
-                thread = threading.Thread(target=selenium_task)
+                thread = threading.Thread(target=nodriver_task)
                 threads.append(thread)
                 thread.start()
 
@@ -647,7 +742,7 @@ def main():
             workIndex = 0
             threads = []
             for _ in range(THREADS):
-                thread = threading.Thread(target=selenium_task)
+                thread = threading.Thread(target=nodriver_task)
                 threads.append(thread)
                 thread.start()
 
@@ -660,3 +755,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
